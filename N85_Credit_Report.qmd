@@ -1,0 +1,76 @@
+---
+title: "N85_Credit_Report"
+format: html
+editor: visual
+---
+
+```{r}
+if (!require(librarian)){
+  install.packages("librarian")
+  library(librarian)
+}
+
+# librarian downloads, if not already downloaded, and reads in needed packages
+librarian::shelf(tidyverse, here, DBI, odbc)
+
+```
+
+```{r}
+# Connect to the `PLAYGROUND` database and append data if necessary
+tryCatch({
+  db_connection <- DBI::dbConnect(odbc::odbc(),  # Establish a database connection using ODBC for the playground database
+                                     Driver = "SnowflakeDSIIDriver",  # Specify the Snowflake ODBC driver
+                                     Server = "hawaiianair.west-us-2.azure.snowflakecomputing.com",  # Server address
+                                     WAREHOUSE = "DATA_LAKE_READER",  # Specify the Snowflake warehouse
+                                     Database = "RAW",  # Specify the database name
+                                     UID = "jacob.eisaguirre@hawaiianair.com",  # User ID for authentication
+                                     authenticator = "externalbrowser")  # Use external browser for authentication
+  print("Database Connected!")  # Print success message if connection is established
+}, error = function(cond) {
+  print("Unable to connect to Database.")  # Print error message if connection fails
+})
+
+# Set schema and retrieve data from `AA_FINAL_PAIRING` table
+dbExecute(db_connection, "USE SCHEMA HA") 
+
+
+
+```
+
+```{r}
+
+q_master_history_crew <- "SELECT * FROM CTC_CREWTRACCABIN_MASTER_HISTORY WHERE PRGID_PRGDATE >= '20241001' 
+                          AND PRGID_PRGDATE <= '20241031';"
+
+ms_crew <- dbGetQuery(db_connection, q_master_history_crew) 
+
+```
+
+## Reserve List
+```{r}
+
+rlv_FAs <- ms_crew %>% 
+  mutate(update_dt = paste(UPDATEID_UPDDATE, UPDATEID_UPDTIME, sep = "")) %>% 
+  group_by(MASTID_EMPNO,  PRGID_PRGDATE) %>% 
+  filter(#update_dt == max(update_dt), 
+         TXNCODE %in% c("RLV", "RSV")) %>% 
+  ungroup() %>% 
+  select(MASTID_EMPNO) %>% 
+  distinct()
+
+```
+
+## Get Reserve ASN Credit
+```{r}
+
+asn_rlvs <- ms_crew %>% 
+  mutate(update_dt = paste(UPDATEID_UPDDATE, UPDATEID_UPDTIME, sep = "")) %>% 
+  filter(MASTID_EMPNO %in% rlv_FAs$MASTID_EMPNO) %>% 
+  group_by(MASTID_EMPNO, PRGID_PRGDATE) %>% 
+  filter(update_dt == max(update_dt),
+         TXNCODE == "ASN")
+  
+
+
+```
+

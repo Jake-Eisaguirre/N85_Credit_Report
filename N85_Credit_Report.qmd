@@ -11,7 +11,122 @@ if (!require(librarian)){
 }
 
 # librarian downloads, if not already downloaded, and reads in needed packages
-librarian::shelf(tidyverse, here, DBI, odbc)
+librarian::shelf(tidyverse, here, DBI, odbc, padr)
+
+```
+
+```{r}
+# Connect to the `PLAYGROUND` database and append data if necessary
+tryCatch({
+  db_connection <- DBI::dbConnect(odbc::odbc(),  # Establish a database connection using ODBC for the playground database
+                                     Driver = "SnowflakeDSIIDriver",  # Specify the Snowflake ODBC driver
+                                     Server = "hawaiianair.west-us-2.azure.snowflakecomputing.com",  # Server address
+                                     WAREHOUSE = "DATA_LAKE_READER",  # Specify the Snowflake warehouse
+                                     Database = "ENTERPRISE",  # Specify the database name
+                                     UID = "jacob.eisaguirre@hawaiianair.com",  # User ID for authentication
+                                     authenticator = "externalbrowser")  # Use external browser for authentication
+  print("Database Connected!")  # Print success message if connection is established
+}, error = function(cond) {
+  print("Unable to connect to Database.")  # Print error message if connection fails
+})
+
+# Set schema and retrieve data from `AA_FINAL_PAIRING` table
+dbExecute(db_connection, "USE SCHEMA CREW_ANALYTICS") 
+
+
+
+```
+
+```{r}
+
+q_master_history <- "SELECT * FROM CT_MASTER_HISTORY WHERE BID_PERIOD = '2024-10';"
+
+ms <- dbGetQuery(db_connection, q_master_history) 
+
+
+min_date <- min(ms$PAIRING_DATE, na.rm = TRUE) 
+
+max_date <- max(ms$PAIRING_DATE, na.rm = TRUE) 
+
+
+
+q_msched <- paste0("select * from CT_FLIGHT_LEG WHERE PAIRING_DATE BETWEEN'", min_date,"' AND '", max_date,"';")
+
+raw_fl <- dbGetQuery(db_connection, q_msched)
+
+```
+
+
+
+## Reserve List
+```{r}
+
+rlv_FAs <- ms %>% 
+  filter(PAIRING_DATE == "2024-10-25") %>% 
+  mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>% 
+  group_by(CREW_ID) %>% 
+  filter(#update_dt == max(update_dt), 
+         CREW_INDICATOR == "FA",
+         TRANSACTION_CODE %in% c("RLV", "RSV")) %>% 
+  ungroup() %>% 
+  select(CREW_ID) %>% 
+  distinct()
+
+```
+
+## Get Reserve ASN Credit
+```{r}
+
+explore_asn <- ms %>%
+  filter(CREW_ID %in% rlv_FAs$CREW_ID,
+         PAIRING_DATE == "2024-10-25") %>%
+  mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
+  group_by(CREW_ID, PAIRING_DATE) %>%
+  filter(update_dt == max(update_dt),
+         TRANSACTION_CODE %in% c("ASN")) %>% 
+  select(CREW_ID, BID_PERIOD, BASE, PAIRING_NO, PAIRING_DATE, TO_DATE, PAIRING_POSITION) %>% 
+  ungroup() 
+# %>% 
+#   pivot_longer(cols = c("PAIRING_DATE", "TO_DATE"), values_to = "PAIRING_DATE") %>% 
+#   group_by(CREW_ID, BASE, PAIRING_NO) %>%
+#   pad() %>% 
+#   fill(.direction = c("down"))
+
+
+  
+
+
+```
+
+## Credit from Master History
+```{r}
+
+cred_ms <- raw_fl %>% 
+  filter(#SCHED_CREDIT > 0,
+         PAIRING_DATE == "2024-10-25") %>% 
+  group_by(FLIGHT_NO, PAIRING_DATE, PAIRING_NO, FLIGHT_DATE, DEPARTING_CITY, 
+           ARRIVAL_CITY, SCHED_DEPARTURE_DATE, SCHED_DEPARTURE_TIME, SCHED_ARRIVAL_DATE,
+           SCHED_ARRIVAL_TIME) %>% 
+  mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
+  mutate(temp_id = cur_group_id()) %>%
+  filter(is.na(DEADHEAD),
+         !duplicated(temp_id)) %>%
+  filter(PAIRING_NO %in% explore_asn$PAIRING_NO) %>%
+  select(FLIGHT_NO, PAIRING_DATE, PAIRING_NO, SCHED_CREDIT, 
+         DEPARTING_CITY, ARRIVAL_CITY, SCHED_DEPARTURE_DATE, SCHED_DEPARTURE_TIME, SCHED_ARRIVAL_DATE,
+           SCHED_ARRIVAL_TIME) %>% 
+  ungroup() %>% 
+  distinct()
+  
+
+```
+
+## RLV ASN employee level credit
+```{r}
+
+cred_emp <- inner_join(explore_asn, cred_ms, by = c("PAIRING_DATE", "PAIRING_NO"))
+
+unique(explore_asn$CREW_ID) == unique(cred_emp$CREW_ID)
 
 ```
 
@@ -33,44 +148,39 @@ tryCatch({
 # Set schema and retrieve data from `AA_FINAL_PAIRING` table
 dbExecute(db_connection, "USE SCHEMA HA") 
 
+ctc_ms <- "select * from CTC_CREWTRACCABIN_MASTER_SCHEDULE WHERE MASTID_BIDATE = '202410';"
 
+raw_ctc_ms <- dbGetQuery(db_connection, ctc_ms)
 
-```
-
-```{r}
-
-q_master_history_crew <- "SELECT * FROM CTC_CREWTRACCABIN_MASTER_HISTORY WHERE PRGID_PRGDATE >= '20241001' 
-                          AND PRGID_PRGDATE <= '20241031';"
-
-ms_crew <- dbGetQuery(db_connection, q_master_history_crew) 
-
-```
-
-## Reserve List
-```{r}
-
-rlv_FAs <- ms_crew %>% 
-  mutate(update_dt = paste(UPDATEID_UPDDATE, UPDATEID_UPDTIME, sep = "")) %>% 
-  group_by(MASTID_EMPNO,  PRGID_PRGDATE) %>% 
-  filter(#update_dt == max(update_dt), 
-         TXNCODE %in% c("RLV", "RSV")) %>% 
+ctc_ms <- raw_ctc_ms %>%
+  # Combine date and time fields
+  mutate(update_dt = paste(UPDATEID_UPDDATE, UPDATEID_UPDTIME, sep = "")) %>%
+  # Group by MASTID_EMPNO to generate day sequence for each unique employee
+  group_by(MASTID_EMPNO) %>%
+  # Add day column with a sequence from 1 to 31 for each employee
+  mutate(day = rep(1:31, length.out = n()), .after = MASTID_EMPNO) %>%
   ungroup() %>% 
-  select(MASTID_EMPNO) %>% 
-  distinct()
-
-```
-
-## Get Reserve ASN Credit
-```{r}
-
-asn_rlvs <- ms_crew %>% 
-  mutate(update_dt = paste(UPDATEID_UPDDATE, UPDATEID_UPDTIME, sep = "")) %>% 
-  filter(MASTID_EMPNO %in% rlv_FAs$MASTID_EMPNO) %>% 
-  group_by(MASTID_EMPNO, PRGID_PRGDATE) %>% 
-  filter(update_dt == max(update_dt),
-         TXNCODE == "ASN")
+  # Convert FROM and TO dates to ISO 8601 format
+  mutate(
+    EFFECTIVE_FROMDATE = as.Date(EFFECTIVE_FROMDATE, format = "%Y%m%d"),
+    EFFECTIVE_TODATE = as.Date(EFFECTIVE_TODATE, format = "%Y%m%d")
+  ) %>%
+  select(MASTID_EMPNO, MASTID_BIDATE, BASE, EFFECTIVE_FROMDATE, EFFECTIVE_TODATE, day, BIDTYPE, PAYHRS, BLOCKCDT) %>% 
+  rename(CREW_ID = MASTID_EMPNO,
+         BID_PERIOD = MASTID_BIDATE,
+         DAY = day) %>% 
+  mutate(MONTH = month(EFFECTIVE_FROMDATE), .before = DAY) %>% 
+  mutate(YEAR = year(EFFECTIVE_FROMDATE), .before = MONTH)
   
 
+  
+
+```
+
+```{r}
+
+crd_emp_asn_rlv <- ctc_ms %>% 
+  filter(CREW_ID %in% explore_asn$CREW_ID)
 
 ```
 

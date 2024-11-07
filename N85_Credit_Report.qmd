@@ -62,12 +62,12 @@ raw_fl <- dbGetQuery(db_connection, q_msched)
 ```{r}
 
 rlv_FAs <- ms %>% 
-  filter(PAIRING_DATE == "2024-10-25") %>% 
+  #filter(PAIRING_DATE == "2024-10-25") %>% 
   mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>% 
   group_by(CREW_ID) %>% 
   filter(#update_dt == max(update_dt), 
          CREW_INDICATOR == "FA",
-         TRANSACTION_CODE %in% c("RLV", "RSV")) %>% 
+         TRANSACTION_CODE %in% c("RLV", "RSV", "ARC")) %>% 
   ungroup() %>% 
   select(CREW_ID) %>% 
   distinct()
@@ -79,7 +79,9 @@ rlv_FAs <- ms %>%
 
 explore_asn <- ms %>%
   filter(CREW_ID %in% rlv_FAs$CREW_ID,
-         PAIRING_DATE == "2024-10-25") %>%
+         CREW_INDICATOR == "FA",
+         #PAIRING_DATE == "2024-10-25",
+         ) %>%
   mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
   group_by(CREW_ID, PAIRING_DATE) %>%
   filter(update_dt == max(update_dt),
@@ -103,16 +105,18 @@ explore_asn <- ms %>%
 
 cred_ms <- raw_fl %>% 
   filter(#SCHED_CREDIT > 0,
-         PAIRING_DATE == "2024-10-25") %>% 
+         #PAIRING_DATE == "2024-10-25",
+         ) %>% 
   group_by(FLIGHT_NO, PAIRING_DATE, PAIRING_NO, FLIGHT_DATE, DEPARTING_CITY, 
            ARRIVAL_CITY, SCHED_DEPARTURE_DATE, SCHED_DEPARTURE_TIME, SCHED_ARRIVAL_DATE,
            SCHED_ARRIVAL_TIME) %>% 
   mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
   mutate(temp_id = cur_group_id()) %>%
   filter(is.na(DEADHEAD),
-         !duplicated(temp_id)) %>%
-  filter(PAIRING_NO %in% explore_asn$PAIRING_NO) %>%
-  select(FLIGHT_NO, PAIRING_DATE, PAIRING_NO, SCHED_CREDIT, 
+         #!duplicated(temp_id)
+         ) %>%
+  #filter(PAIRING_NO %in% explore_asn$PAIRING_NO) %>%
+  select(FLIGHT_NO, PAIRING_DATE, PAIRING_NO, SCHED_CREDIT, ACT_CREDIT, ACT_CREDIT_OVERRIDDEN,
          DEPARTING_CITY, ARRIVAL_CITY, SCHED_DEPARTURE_DATE, SCHED_DEPARTURE_TIME, SCHED_ARRIVAL_DATE,
            SCHED_ARRIVAL_TIME) %>% 
   ungroup() %>% 
@@ -124,11 +128,34 @@ cred_ms <- raw_fl %>%
 ## RLV ASN employee level credit
 ```{r}
 
-cred_emp <- inner_join(explore_asn, cred_ms, by = c("PAIRING_DATE", "PAIRING_NO"))
+cred_emp <- left_join(explore_asn, cred_ms, by = c("PAIRING_DATE", "PAIRING_NO"), relationship = "many-to-many") %>%
+  mutate(
+    # Ensure ACT_CREDIT is in Period format for calculations
+    ACT_CREDIT = as.period(ACT_CREDIT),
+    
+    # Set ACT_CREDIT based on condition, assigning hms duration for "H3500" and retaining original otherwise
+    ACT_CREDIT = case_when(
+      str_detect(PAIRING_NO, "H3500") ~ hms("00:04:10"),
+      TRUE ~ ACT_CREDIT
+    ),
+    
+    # Convert ACT_CREDIT to decimal hours format
+    ACT_CREDIT = hour(ACT_CREDIT) + minute(ACT_CREDIT) / 60 + second(ACT_CREDIT) / 3600
+  ) %>% 
+  # Filter rows where ACT_CREDIT is greater than 0
+  filter(ACT_CREDIT > 0)
 
-unique(explore_asn$CREW_ID) == unique(cred_emp$CREW_ID)
+missing_crew <- anti_join(explore_asn, cred_emp, by = c("CREW_ID"))
 
 ```
+
+
+```{r}
+t <- cred_emp %>% 
+  group_by(CREW_ID) %>% 
+  reframe(sum_hours = sum(ACT_CREDIT))
+```
+
 
 ```{r}
 # Connect to the `PLAYGROUND` database and append data if necessary
@@ -155,23 +182,23 @@ raw_ctc_ms <- dbGetQuery(db_connection, ctc_ms)
 ctc_ms <- raw_ctc_ms %>%
   # Combine date and time fields
   mutate(update_dt = paste(UPDATEID_UPDDATE, UPDATEID_UPDTIME, sep = "")) %>%
-  # Group by MASTID_EMPNO to generate day sequence for each unique employee
-  group_by(MASTID_EMPNO) %>%
-  # Add day column with a sequence from 1 to 31 for each employee
-  mutate(day = rep(1:31, length.out = n()), .after = MASTID_EMPNO) %>%
-  ungroup() %>% 
-  # Convert FROM and TO dates to ISO 8601 format
   mutate(
     EFFECTIVE_FROMDATE = as.Date(EFFECTIVE_FROMDATE, format = "%Y%m%d"),
     EFFECTIVE_TODATE = as.Date(EFFECTIVE_TODATE, format = "%Y%m%d")
   ) %>%
-  select(MASTID_EMPNO, MASTID_BIDATE, BASE, EFFECTIVE_FROMDATE, EFFECTIVE_TODATE, day, BIDTYPE, PAYHRS, BLOCKCDT) %>% 
-  rename(CREW_ID = MASTID_EMPNO,
-         BID_PERIOD = MASTID_BIDATE,
-         DAY = day) %>% 
-  mutate(MONTH = month(EFFECTIVE_FROMDATE), .before = DAY) %>% 
-  mutate(YEAR = year(EFFECTIVE_FROMDATE), .before = MONTH)
-  
+  group_by(MASTID_EMPNO) %>% 
+  filter(update_dt == max(update_dt)) %>% 
+  select(MASTID_EMPNO, MASTID_BIDATE, BASE, EFFECTIVE_FROMDATE, EFFECTIVE_TODATE, PAYHRS) %>% 
+  rename(
+    CREW_ID = MASTID_EMPNO,
+    BID_PERIOD = MASTID_BIDATE
+  ) %>% 
+  filter(
+    CREW_ID %in% c(rlv_FAs$CREW_ID),
+    PAYHRS > 0
+  ) %>%
+  # Convert PAYHRS to decimal hours
+  mutate(PAYHRS = PAYHRS / 60)
 
   
 
@@ -179,8 +206,20 @@ ctc_ms <- raw_ctc_ms %>%
 
 ```{r}
 
-crd_emp_asn_rlv <- ctc_ms %>% 
-  filter(CREW_ID %in% explore_asn$CREW_ID)
+
+# Filter data to only include PAYHRS > 50 and arrange by PAYHRS
+ctc_ms_filtered <- ctc_ms %>% 
+  #filter(PAYHRS > 100) %>%
+  arrange(desc(PAYHRS)) %>%  # Arrange in ascending order for descending plot order
+  mutate(CREW_ID = factor(CREW_ID, levels = unique(CREW_ID)))  # Order CREW_ID by PAYHRS in ascending order
+
+# Create the plot with descending bars
+ggplot(ctc_ms_filtered, aes(x = CREW_ID, y = PAYHRS)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Crew ID", y = "Pay Hours (Decimal)") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Pay Hours by Crew ID (Filtered for >50 Pay Hours)")
+
 
 ```
 

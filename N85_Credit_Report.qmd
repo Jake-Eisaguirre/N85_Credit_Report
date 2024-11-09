@@ -70,7 +70,8 @@ rlv_FAs <- ms %>%
   group_by(CREW_ID) %>% 
   filter(#update_dt == max(update_dt), 
          CREW_INDICATOR == "FA",
-         TRANSACTION_CODE %in% c("RLV", "RSV", "ARC")) %>% 
+         TRANSACTION_CODE %in% c("RLV", "RSV"),
+         !LINE_TYPE == "B") %>% 
   ungroup() %>% 
   select(CREW_ID) %>% 
   distinct()
@@ -83,91 +84,92 @@ rlv_FAs <- ms %>%
 explore_asn <- mp %>%
   filter(
          CREW_INDICATOR == "FA",
-         #PAIRING_DATE == "2024-10-25",
+         #PAIRING_DATE == "2024-10-25"
          ) %>%
   mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
   group_by(CREW_ID, PAIRING_DATE) %>%
   filter(update_dt == max(update_dt),
          #TRANSACTION_CODE %in% c("ARC"),
          ) %>% 
-  select(CREW_ID, BID_PERIOD, PAIRING_NO, PAIRING_DATE, PAIRING_POSITION) %>% 
-  ungroup()
+  select(CREW_ID, BID_PERIOD, PAIRING_NO, PAIRING_ASSIGNMENT_CODE, PAIRING_DATE, PAIRING_POSITION) %>% 
+  ungroup() %>% 
+  filter(!PAIRING_ASSIGNMENT_CODE == c("2SK"))
 
 
 
-explore_arcs <- ms %>%
-  filter(
-         CREW_INDICATOR == "FA",
-         #PAIRING_DATE == "2024-10-25",
-         ) %>%
-  mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
-  group_by(CREW_ID, PAIRING_DATE) %>%
-  filter(#update_dt == max(update_dt),
-         #FLIGHT_NO %in% c("ARC"),
-         ) %>%
-  select(CREW_ID, BID_PERIOD, BASE, PAIRING_NO, PAIRING_DATE, TO_DATE, PAIRING_POSITION) %>%
-  ungroup()
+
 
 
 ```
+
+## MS
+```{r}
+final_tran <- ms %>%
+  filter(TRANSACTION_CODE %in%  c("VC1", "VC2", "MIL", "UNI", "2CB", "2SK", "FLV", "FLP")) %>% 
+  filter(CREW_ID %in% rlv_FAs$CREW_ID) %>%
+  group_by(CREW_ID, PAIRING_DATE, TO_DATE) %>% 
+  mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " "),
+         #fill_complete_id = cur_group_id()
+         ) %>%
+  ungroup() %>% 
+  group_by(CREW_ID, TRANSACTION_CODE) %>%
+  #filter(update_dt == max(update_dt)) %>%
+  select(CREW_ID, BID_PERIOD, BASE, PAIRING_NO, TRANSACTION_CODE, PAIRING_DATE, TO_DATE, PAIRING_POSITION, CREDIT) %>% 
+  rename(combined_credit = CREDIT) %>% 
+  mutate(combined_credit = round(as.numeric(hms(combined_credit)), 2) / 3600,
+         flag = if_else(TRANSACTION_CODE == "2SK" & !is.na(PAIRING_NO), 1, 0)) %>% 
+  filter(!flag == 1) %>% 
+  ungroup() %>% 
+  group_by(CREW_ID, TRANSACTION_CODE, PAIRING_DATE) %>%
+  filter(combined_credit == min(combined_credit)) %>% 
+  ungroup() %>% 
+  group_by(CREW_ID, TRANSACTION_CODE) %>% 
+  mutate(flag_2 = if_else(!PAIRING_DATE == TO_DATE, 1, 0)) %>% 
+  filter(flag_2 == 0) %>% 
+  select(!c(flag, flag_2))
+# %>%
+#   pivot_longer(cols = c(PAIRING_DATE, TO_DATE), names_to = "date_type", values_to = "PAIRING_DATE") %>%
+#   group_by(CREW_ID, TRANSACTION_CODE, fill_complete_id) %>%
+#   complete(PAIRING_DATE = seq(min(PAIRING_DATE), max(PAIRING_DATE), by = "day")) %>%
+#   fill(CREW_ID, BID_PERIOD, BASE, PAIRING_NO, TRANSACTION_CODE, PAIRING_POSITION, combined_credit, .direction = "downup") %>%
+#   ungroup() %>%
+#   select(!c(date_type, fill_complete_id)) %>%
+#   group_by(CREW_ID, TRANSACTION_CODE, PAIRING_DATE) %>%
+#   mutate(temp_id = cur_group_id()) %>%
+#   filter(!duplicated(temp_id)) %>%
+#   select(!c(temp_id)) %>%
+#   ungroup()
+
+
+```
+
 
 ## Credit from Master History
 ```{r}
 
-cred_ms <- raw_fl %>% 
-  filter(#SCHED_CREDIT > 0,
-         PAIRING_DATE == "2024-10-25",
-         ) %>% 
-  group_by(FLIGHT_NO, PAIRING_DATE, PAIRING_NO, FLIGHT_DATE, DEPARTING_CITY, 
-           ARRIVAL_CITY, SCHED_DEPARTURE_DATE, SCHED_DEPARTURE_TIME, SCHED_ARRIVAL_DATE,
-           SCHED_ARRIVAL_TIME) %>% 
-  mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
-  mutate(temp_id = cur_group_id()) %>%
-  filter(is.na(DEADHEAD),
-         #!duplicated(temp_id)
-         ) %>%
-  #filter(PAIRING_NO %in% explore_asn$PAIRING_NO) %>%
-  select(FLIGHT_NO, PAIRING_DATE, PAIRING_NO, 
-         DEPARTING_CITY, ARRIVAL_CITY, SCHED_DEPARTURE_DATE, SCHED_DEPARTURE_TIME, SCHED_ARRIVAL_DATE,
-           SCHED_ARRIVAL_TIME) %>% 
-  ungroup() %>% 
-  distinct()
+# cred_ms <- raw_fl %>% 
+#   filter(#SCHED_CREDIT > 0,
+#          PAIRING_DATE == "2024-10-25",
+#          ) %>% 
+#   group_by(FLIGHT_NO, PAIRING_DATE, PAIRING_NO, FLIGHT_DATE, DEPARTING_CITY, 
+#            ARRIVAL_CITY, SCHED_DEPARTURE_DATE, SCHED_DEPARTURE_TIME, SCHED_ARRIVAL_DATE,
+#            SCHED_ARRIVAL_TIME) %>% 
+#   mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
+#   mutate(temp_id = cur_group_id()) %>%
+#   filter(is.na(DEADHEAD),
+#          #!duplicated(temp_id)
+#          ) %>%
+#   #filter(PAIRING_NO %in% explore_asn$PAIRING_NO) %>%
+#   select(FLIGHT_NO, PAIRING_DATE, PAIRING_NO, 
+#          DEPARTING_CITY, ARRIVAL_CITY, SCHED_DEPARTURE_DATE, SCHED_DEPARTURE_TIME, SCHED_ARRIVAL_DATE,
+#            SCHED_ARRIVAL_TIME) %>% 
+#   ungroup() %>% 
+#   distinct()
   
 
 ```
 
-## RLV ASN employee level credit
-```{r}
 
-cred_emp <- left_join(explore_asn, cred_ms, by = c("PAIRING_DATE", "PAIRING_NO"), relationship = "many-to-many") 
-# 
-# %>%
-#   mutate(
-#     # Ensure ACT_CREDIT is in Period format for calculations
-#     ACT_CREDIT = as.period(ACT_CREDIT),
-#     
-#     # Set ACT_CREDIT based on condition, assigning hms duration for "H3500" and retaining original otherwise
-#     ACT_CREDIT = case_when(
-#       str_detect(PAIRING_NO, "H3500") ~ hms("00:04:10"),
-#       TRUE ~ ACT_CREDIT
-#     ),
-#     
-#     # Convert ACT_CREDIT to decimal hours format
-#     ACT_CREDIT = hour(ACT_CREDIT) + minute(ACT_CREDIT) / 60 + second(ACT_CREDIT) / 3600
-#   ) %>% 
-#   # Filter rows where ACT_CREDIT is greater than 0
-#   filter(ACT_CREDIT > 0)
-
-missing_crew <- anti_join(explore_asn, cred_emp, by = c("CREW_ID"))
-
-```
-
-
-```{r}
-t <- cred_emp %>% 
-  group_by(CREW_ID) %>% 
-  reframe(sum_hours = sum(ACT_CREDIT))
-```
 
 
 ## Pairing Master
@@ -183,6 +185,7 @@ pm_q <- paste0("select PAIRING_DATE, PAIRING_NO, FLIGHT_NO, CREW_INDICATOR, PAIR
 raw_pm <- dbGetQuery(db_connection, pm_q)
 
 mid_pm <- raw_pm %>% 
+  #select(PAIRING_DATE, PAIRING_NO, FLIGHT_NO, CREW_INDICATOR, PAIRING_POSITION, ACT_CREDIT_INT_TIME,  UPDATE_DATE, UPDATE_TIME) %>% 
   filter(CREW_INDICATOR == "FA") %>% 
   group_by(PAIRING_DATE, PAIRING_NO, FLIGHT_NO) %>% 
   mutate(temp_id = cur_group_id(),
@@ -198,45 +201,47 @@ mid_pm <- raw_pm %>%
   mutate(combined_credit = rowSums(select(., starts_with("ACT")), na.rm = TRUE), .after = CREW_INDICATOR) %>% 
   select(PAIRING_NO, PAIRING_DATE, FLIGHT_NO, CREW_INDICATOR, combined_credit) 
 
-clean_arc <- raw_pm %>% 
-  group_by(PAIRING_DATE, PAIRING_NO, FLIGHT_NO) %>% 
-  mutate(temp_id = cur_group_id(),
-         update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>% 
-  filter(!duplicated(temp_id),
-         FLIGHT_NO == "ARC") %>% 
-  select(-PAIRING_POSITION) %>%
-  ungroup() %>%
-  # Convert all columns starting with "ACT" to decimal hours
-  mutate(across(starts_with("ACT"), ~ round(as.numeric(hms(.)), 2) / 3600)) %>%
-  # Calculate combined_credit as the sum of all "ACT" columns
-  mutate(combined_credit = rowSums(select(., starts_with("ACT")), na.rm = TRUE), .after = CREW_INDICATOR) %>% 
-  select(PAIRING_NO, PAIRING_DATE, FLIGHT_NO, CREW_INDICATOR, combined_credit) %>% 
-  filter(CREW_INDICATOR == "FA")
 
-arcs <- inner_join(explore_arcs, clean_arc) %>% 
-  filter(CREW_ID %in% c(rlv_FAs$CREW_ID)) %>% 
-  group_by(CREW_ID, PAIRING_DATE, PAIRING_NO) %>% 
+#22930
+
+# do pairing assingment codes look ok?
+# does VAC count towards N85 credit?
+# sum across ACT credit columns correctly?
+
+cred_final <- inner_join(explore_asn, mid_pm) %>% 
+  group_by(CREW_ID, PAIRING_NO, PAIRING_DATE, FLIGHT_NO) %>% 
   mutate(temp_id = cur_group_id()) %>% 
-  filter(!duplicated(temp_id)) %>% 
-  select(!temp_id)
+  filter(!duplicated(temp_id),
+         CREW_ID %in% c(rlv_FAs$CREW_ID)) %>% 
+  ungroup() %>% 
+  mutate(PAIRING_NO = factor(PAIRING_NO, levels = unique(PAIRING_NO[order(nchar(PAIRING_NO), PAIRING_NO)]))) %>%
+  # Arrange data by CREW_ID, PAIRING_DATE, and ordered PAIRING_NO
+  arrange(CREW_ID, PAIRING_DATE, PAIRING_NO) %>%
+  # Group by CREW_ID and PAIRING_DATE
+  group_by(CREW_ID, PAIRING_DATE) %>%
+  # Filter to keep only the row with the largest suffix in PAIRING_NO
+  slice_max(PAIRING_NO) %>%
+  ungroup() %>% 
+  filter(!PAIRING_ASSIGNMENT_CODE %in% c("O75", "TTD", "TSD", "SOP", "VNO", "FLU", "PLS", "UNA", "NOS", "XXX"),
+         #PAIRING_ASSIGNMENT_CODE == "ASN"
+         ) %>% 
+  select(!c(temp_id)) %>% 
+  plyr::rbind.fill(final_tran)
 
+write_csv(cred_final, here("employee_cred_per_day.csv"))
 
-# Need to capture most recent Pairing number per date but also any pairing numbers for ARC
-cred_final <- inner_join(explore_asn, mid_pm) 
-
-
-final <- rbind(cred_final, arcs)
-
-
-#final <- inner_join(cred_final, cred_ms, by = c("PAIRING_NO", "PAIRING_DATE", "FLIGHT_NO"))
 ```
 
 
 ```{r}
+
+#22930
+
 t <- cred_final %>% 
   group_by(CREW_ID) %>% 
-  reframe(n = sum(combined_credit)) %>% 
-  filter(CREW_ID %in% c(rlv_FAs$CREW_ID))
+  reframe(monthly_credit = sum(combined_credit))
+
+write_csv(t, here("monthly_employee_agg.csv"))
 
 ```
 

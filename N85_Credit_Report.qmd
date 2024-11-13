@@ -105,7 +105,7 @@ explore_asn <- mp %>%
 ## MS
 ```{r}
 final_tran <- mh %>%
-  filter(!TRANSACTION_CODE == "SNO") %>% 
+  filter(!TRANSACTION_CODE %in%  c("SNO", "RSK", "RRD", "ADV")) %>% 
   mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
   group_by(CREW_ID, PAIRING_DATE) %>%
   filter(update_dt == max(update_dt)) %>% 
@@ -223,7 +223,7 @@ cred_final <- inner_join(explore_asn, mid_pm) %>%
   slice_max(PAIRING_NO) %>%
   ungroup() %>% 
   filter(!PAIRING_ASSIGNMENT_CODE %in% c("O75", "TTD", "TSD", "SOP", "VNO", "FLU", "PLS", "UNA", "NOS", "XXX", 
-                                         "VC1", "VC2", "MIL", "UNI", "2CB", "2SK", "FLV", "FLP", "VCB"), # Do we need "REM"?
+                                         "VC1", "VC2", "MIL", "UNI", "2CB", "2SK", "FLV", "FLP", "VCB", "REM"), # Do we need "REM"?
          #PAIRING_ASSIGNMENT_CODE == "ASN"
          ) %>% 
   select(!c(temp_id)) %>% 

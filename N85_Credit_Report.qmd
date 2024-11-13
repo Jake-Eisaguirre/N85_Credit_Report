@@ -105,15 +105,20 @@ explore_asn <- mp %>%
 ## MS
 ```{r}
 final_tran <- mh %>%
+  filter(!TRANSACTION_CODE == "SNO") %>% 
+  mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>%
+  group_by(CREW_ID, PAIRING_DATE) %>%
+  filter(update_dt == max(update_dt)) %>% 
+  select(!c(update_dt)) %>% 
+  ungroup() %>% 
   filter(TRANSACTION_CODE %in%  c("VC1", "VC2", "MIL", "UNI", "2CB", "2SK", "FLV", "FLP", "VCB")) %>% 
   filter(CREW_ID %in% rlv_FAs$CREW_ID) %>%
-  group_by(CREW_ID, PAIRING_DATE, TO_DATE) %>% 
-  mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " "),
-         #fill_complete_id = cur_group_id()
-         ) %>%
+  group_by(CREW_ID, PAIRING_DATE) %>% 
+  # Filter to keep only "FLV" if both "FLP" and "FLV" are present on the same day
+  filter(!(any(TRANSACTION_CODE == "FLV") & TRANSACTION_CODE == "FLP")) %>%
   ungroup() %>% 
   group_by(CREW_ID, TRANSACTION_CODE) %>%
-  select(CREW_ID, BID_PERIOD, BASE, PAIRING_NO, TRANSACTION_CODE, PAIRING_DATE, TO_DATE, PAIRING_POSITION, CREDIT, update_dt) %>% 
+  select(CREW_ID, BID_PERIOD, BASE, PAIRING_NO, TRANSACTION_CODE, PAIRING_DATE, TO_DATE, PAIRING_POSITION, CREDIT) %>% 
   rename(combined_credit = CREDIT) %>% 
   mutate(combined_credit = round(as.numeric(hms(combined_credit)), 2) / 3600,
          flag = if_else(TRANSACTION_CODE == "2SK" & !is.na(PAIRING_NO), 1, 0),
@@ -122,28 +127,16 @@ final_tran <- mh %>%
   filter(!flag_3 == 1) %>% 
   ungroup() %>% 
   group_by(CREW_ID, TRANSACTION_CODE, PAIRING_DATE) %>%
-  filter(combined_credit == min(combined_credit)) %>% 
+  filter(combined_credit == max(combined_credit)) %>% 
   ungroup() %>%
   group_by(CREW_ID, TRANSACTION_CODE) %>%
-  mutate(flag_2 = if_else(!PAIRING_DATE == TO_DATE, 1, 0)) %>%
+  mutate(flag_2 = if_else(!PAIRING_DATE == TO_DATE & TRANSACTION_CODE == "2SK", 1, 0)) %>%
   filter(flag_2 == 0) %>%
   select(!c(flag, flag_2, flag_3)) %>% 
-  ungroup() %>% 
-  group_by(CREW_ID, TRANSACTION_CODE, PAIRING_DATE) %>%
-  filter(update_dt == max(update_dt))
+  ungroup()
 
-# %>%
-#   pivot_longer(cols = c(PAIRING_DATE, TO_DATE), names_to = "date_type", values_to = "PAIRING_DATE") %>%
-#   group_by(CREW_ID, TRANSACTION_CODE, fill_complete_id) %>%
-#   complete(PAIRING_DATE = seq(min(PAIRING_DATE), max(PAIRING_DATE), by = "day")) %>%
-#   fill(CREW_ID, BID_PERIOD, BASE, PAIRING_NO, TRANSACTION_CODE, PAIRING_POSITION, combined_credit, .direction = "downup") %>%
-#   ungroup() %>%
-#   select(!c(date_type, fill_complete_id)) %>%
-#   group_by(CREW_ID, TRANSACTION_CODE, PAIRING_DATE) %>%
-#   mutate(temp_id = cur_group_id()) %>%
-#   filter(!duplicated(temp_id)) %>%
-#   select(!c(temp_id)) %>%
-#   ungroup()
+
+
 
 
 ```
@@ -229,7 +222,8 @@ cred_final <- inner_join(explore_asn, mid_pm) %>%
   # Filter to keep only the row with the largest suffix in PAIRING_NO
   slice_max(PAIRING_NO) %>%
   ungroup() %>% 
-  filter(!PAIRING_ASSIGNMENT_CODE %in% c("O75", "TTD", "TSD", "SOP", "VNO", "FLU", "PLS", "UNA", "NOS", "XXX", "FLP", "FLV"),
+  filter(!PAIRING_ASSIGNMENT_CODE %in% c("O75", "TTD", "TSD", "SOP", "VNO", "FLU", "PLS", "UNA", "NOS", "XXX", 
+                                         "VC1", "VC2", "MIL", "UNI", "2CB", "2SK", "FLV", "FLP", "VCB"), # Do we need "REM"?
          #PAIRING_ASSIGNMENT_CODE == "ASN"
          ) %>% 
   select(!c(temp_id)) %>% 
@@ -252,6 +246,23 @@ t <- cred_final %>%
 
 #write_csv(t, here("monthly_employee_agg.csv"))
 #
+
+z <- cred_final %>% 
+  group_by(CREW_ID, PAIRING_DATE) %>% 
+  mutate(temp_id = cur_group_id()) %>% 
+  filter(duplicated(temp_id))
+
+x <- cred_final %>% 
+  group_by(CREW_ID, PAIRING_DATE) %>% 
+  mutate(temp_id = cur_group_id()) 
+
+c <- cred_final %>% 
+  group_by(CREW_ID) %>% 
+  filter(any(TRANSACTION_CODE == "FAR")) %>% 
+  ungroup() %>% 
+  group_by(CREW_ID, PAIRING_DATE) %>% 
+  mutate(flag = as.integer(any(TRANSACTION_CODE == "FAR"))) %>%
+  ungroup()
 
 ```
 
@@ -307,17 +318,21 @@ ctc_ms <- raw_ctc_ms %>%
 
 
 # Filter data to only include PAYHRS > 50 and arrange by PAYHRS
-ctc_ms_filtered <- ctc_ms %>% 
-  #filter(PAYHRS > 100) %>%
-  arrange(desc(PAYHRS)) %>%  # Arrange in ascending order for descending plot order
+ctc_ms_filtered <- t %>% 
+  filter(monthly_credit > 100) %>%
+  arrange(desc(monthly_credit)) %>%  # Arrange in ascending order for descending plot order
   mutate(CREW_ID = factor(CREW_ID, levels = unique(CREW_ID)))  # Order CREW_ID by PAYHRS in ascending order
 
 # Create the plot with descending bars
-ggplot(ctc_ms_filtered, aes(x = CREW_ID, y = PAYHRS)) +
-  geom_bar(stat = "identity") +
-  labs(x = "Crew ID", y = "Pay Hours (Decimal)") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-  ggtitle("Pay Hours by Crew ID (Filtered for >50 Pay Hours)")
+ggplot(ctc_ms_filtered, aes(x = CREW_ID, y = monthly_credit)) +
+  geom_bar(stat = "identity", fill = "#5A2D81") +
+  theme_classic() +
+  labs(x = "Crew ID", y = "Credit Hours (Decimal)") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"  # Remove the legend
+  ) +
+  ggtitle("Bid Period Credit Sum Towards N85")
 
 
 ```

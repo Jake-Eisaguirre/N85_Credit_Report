@@ -68,12 +68,12 @@ rlv_FAs <- mh %>%
   #filter(PAIRING_DATE == "2024-10-25") %>% 
   mutate(update_dt = paste(UPDATE_DATE, UPDATE_TIME, sep = " ")) %>% 
   group_by(CREW_ID) %>% 
-  filter(#update_dt == max(update_dt), 
+  filter(update_dt < "2024-09-25 00:00:00", 
          CREW_INDICATOR == "FA",
          TRANSACTION_CODE %in% c("RLV", "RSV"),
          !LINE_TYPE == "B") %>% 
   ungroup() %>% 
-  select(CREW_ID) %>% 
+  select(CREW_ID, BASE) %>% 
   distinct()
 
 ```
@@ -81,7 +81,7 @@ rlv_FAs <- mh %>%
 ## Get Reserve ASN Credit
 ```{r}
 
-explore_asn <- mp %>%
+pairing_num_date <- mp %>%
   filter(
          CREW_INDICATOR == "FA",
          #PAIRING_DATE == "2024-10-25"
@@ -111,7 +111,7 @@ final_tran <- mh %>%
   filter(update_dt == max(update_dt)) %>% 
   select(!c(update_dt)) %>% 
   ungroup() %>% 
-  filter(TRANSACTION_CODE %in%  c("VC1", "VC2", "MIL", "UNI", "2CB", "2SK", "FLV", "FLP", "VCB")) %>% 
+  filter(TRANSACTION_CODE %in%  c("VC1", "VC2", "MIL", "UNI", "2CB", "2SK", "FLV", "FLP", "VCB")) %>% # PUV FLV
   filter(CREW_ID %in% rlv_FAs$CREW_ID) %>%
   group_by(CREW_ID, PAIRING_DATE) %>% 
   # Filter to keep only "FLV" if both "FLP" and "FLV" are present on the same day
@@ -208,7 +208,7 @@ mid_pm <- raw_pm %>%
 # does VAC count towards N85 credit?
 # sum across ACT credit columns correctly?
 
-cred_final <- inner_join(explore_asn, mid_pm) %>% 
+cred_final <- inner_join(pairing_num_date, mid_pm) %>% 
   group_by(CREW_ID, PAIRING_NO, PAIRING_DATE, FLIGHT_NO) %>% 
   mutate(temp_id = cur_group_id()) %>% 
   filter(!duplicated(temp_id),
@@ -223,7 +223,8 @@ cred_final <- inner_join(explore_asn, mid_pm) %>%
   slice_max(PAIRING_NO) %>%
   ungroup() %>% 
   filter(!PAIRING_ASSIGNMENT_CODE %in% c("O75", "TTD", "TSD", "SOP", "VNO", "FLU", "PLS", "UNA", "NOS", "XXX", 
-                                         "VC1", "VC2", "MIL", "UNI", "2CB", "2SK", "FLV", "FLP", "VCB", "REM"), # Do we need "REM"?
+                                         "VC1", "VC2", "MIL", "UNI", "2CB", "2SK", "FLV", "FLP", "VCB", "REM",
+                                         "PER", "FAR", "PER", "OCC", "N/S", "BSN", "ADD"), # Do we need "REM"?
          #PAIRING_ASSIGNMENT_CODE == "ASN"
          ) %>% 
   select(!c(temp_id)) %>% 
